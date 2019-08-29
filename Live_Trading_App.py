@@ -10,14 +10,15 @@ import matplotlib.pyplot as plt
 from DWX_ZeroMQ_Connector_v2_0_1_RC8 import DWX_ZeroMQ_Connector
 from threading import Thread, Lock
 from time import sleep
+from pandas import Timedelta
 from Risk_Analytics_App import Risk_Advisor
 from Performance_Analytic_App import Performance_Advisor
+from Database_Interactions import DB_Operator
 from IPython.display import clear_output
 import random
 
-
 class Live_Trade_App():
-    def __init__(self, Pool_Limit = 100, Update_Frequency = 5, _Time_Out = 4, _Refresh = 0.3, _TimeZone = 1, frequency = ''):
+    def __init__(self, Pool_Limit = 100, Update_Frequency = 5, _Time_Out = 4, _Refresh = 0.3, _TimeZone = 1):
         self.Pool_Limit = Pool_Limit
         self.Update_Frequency = Update_Frequency
         self._Time_Out = _Time_Out
@@ -34,25 +35,21 @@ class Live_Trade_App():
         self._Data_Port = DWX_ZeroMQ_Connector(_verbose= False, _PUSH_PORT=32553, _PULL_PORT= 32554 ,_SUB_PORT= 32555)
         self._Execution_Port = DWX_ZeroMQ_Connector(_verbose = False)
         self._Check_Connection_status()
-
+        self._DB_Worker = DB_Operator('MT4_Database')
 
     def Run(self):
         self._Holding_Updater = Thread(name = 'Holding Updater', target = self._Current_Holding, args = (self.Update_Frequency, ))
         self._Holding_Updater.daemon = True
         self._Holding_Updater.start()
         
-        self._Risk_Updater = Thread(name = 'Risk Updater', target= self._Risk_Monitor, args= (self.Update_Frequency, ))
+        self._Risk_Updater = Thread(name = 'Risk Updater', target= self._Risk_Performance_Monitor, args= (self.Update_Frequency, ))
         self._Risk_Updater.daemon = True
         self._Risk_Updater.start()
         
-#        self._Random_Trader = Thread(name = 'Rand Trader', target=self._Baby_Strategy, args= (self.Update_Frequency, ))
-#        self._Random_Trader.daemon = True
-#        self._Random_Trader.start()
-#        
-        #Still Need to UPDATE the time of the info fed back!!!!!!!
-        #A function that collects new price record while true, this a daemon thread
-        #A condition switch to terminate the thread
-
+        self._Random_Trader = Thread(name = 'Rand Trader', target=self._Baby_Strategy, args= (self.Update_Frequency, ))
+        self._Random_Trader.daemon = True
+        self._Random_Trader.start()
+        
     
     def _Current_Holding(self, every):
         while self._Market_Open:
@@ -90,7 +87,7 @@ class Live_Trade_App():
             sleep(every)
 
 
-    def _Risk_Monitor(self, every):
+    def _Risk_Performance_Monitor(self, every):
         Last_Postion = {}
         while self._Market_Open:
             if bool(self._Holding) == False:
@@ -99,15 +96,20 @@ class Live_Trade_App():
                 if Last_Postion != self._Holding:
                     Last_Postion = self._Holding.copy()
                     if self._Price_Buffer.shape[0] < 500:
-                        self._Online_Auditor = Risk_Advisor(holding_info= Last_Postion, frequency= 'Minutely', Test_day= 'live', Graphic=False)
+                        self._Online_Auditor = Risk_Advisor(holding_info= Last_Postion, frequency= 'Minutely', Test_day= 'live', Graphic=False, Volume_Multiplier= self._Volume_Multiplier)
+                        self._Online_Appraiser = Performance_Advisor(holding_info= Last_Postion, frequency= 'Minutely', Test_day= 'live', Graphic=False, Volume_Multiplier= self._Volume_Multiplier)
                     else:
                         self._Online_Auditor = Risk_Advisor(holding_info=Last_Postion, _Price= self._Price_Buffer, _Volume= self._Volume_Buffer, Test_day='live', Graphic= False)
                 
                 print(self._Holding)
                 self._Online_Auditor.All_Live_Printers()
-                out3 = self._Online_Auditor.Risk_Contribution(latest= False)
-                out3.fillna(0)
-                plt.pie(out3.values, labels= list(out3.columns), autopct='%1.1f%%')
+                Vol_Att = self._Online_Auditor.Risk_Contribution(latest= False)
+                if any(Vol_Att <0) == False:                  
+                    plt.pie(Vol_Att.values, labels= list(Vol_Att.columns), autopct='%1.1f%%')
+                else: 
+                    Vol_Att.plot.bar()
+                self._Online_Appraiser.Show_Loading()
+                
                 plt.show()
             sleep(every)
             clear_output()
@@ -157,7 +159,7 @@ class Live_Trade_App():
                 break
 
         if self._Execution_Port._valid_response_('zmq'):
-            print('... executed successfully')
+ #           print('... executed successfully')
             if _check in self._Execution_Port._get_response_().keys():
                 return self._Execution_Port._get_response_()
         return None
@@ -169,40 +171,49 @@ class Live_Trade_App():
         else:
             self._Data_Port._DWX_MTX_SUBSCRIBE_MARKETDATA_(symbol)
             
-    def _Snapshots(self, n, symbol = None):
+    def _Snapshots(self, every = 10, symbol = None):
         if self._Price_Buffer.shape[0] == 0:
             print('Starting to Record Price ... ')
             if symbol == None:
-                symbol = self._Asset_Of_Interest
+                symbol = self._Asset_Watchlist
             self._Price_Buffering(symbol= symbol)
             
-        for i in range(n):
-            if i%20 == 0:
-                self._Data_Port._reset_DB_()
+        while self._Market_Open:
+            self._Price_Buffer = pd.DataFrame()
             sleep(self._Refresh)
+
+            while self._Price_Buffer.shape[0] <= self.Pool_Limit:
+                sleep(every)
+                self._Data_Port._reset_DB_()
+                if bool(self._Data_Port._Market_Data_DB):
+                    snapshot = pd.DataFrame.from_dict(self._Data_Port._Market_Data_DB)
+                    snapshot.index = pd.to_datetime(snapshot.index).round('1s') + Timedelta(self._TimeZone,'h')
+                    snapshot = pd.DataFrame(snapshot[symbol].to_list(), index = snapshot.index)
+                    snapshot.columns = ['Bid', 'Ask', 'Volume']
+                    self._Price_Buffer = pd.concat([self._Price_Buffer, snapshot]).drop_duplicates()
+                
+            self._DB_Worker.DF_to_new_table('Streaming_Price')
             
-            if bool(self._Data_Port._Market_Data_DB):
-                snapshot = pd.DataFrame.from_dict(self._Data_Port._Market_Data_DB)
-                snapshot.index = pd.to_datetime(snapshot.index).round('1s')
-                print('Snapshot Number ', i)
-                snapshot = pd.DataFrame(snapshot[symbol].to_list(), index = snapshot.index)
-                snapshot.columns = ['Bid', 'Ask', 'Volume']
-                self._Price_Buffer = pd.concat([self._Price_Buffer, snapshot]).drop_duplicates()
         self._Price_Buffering(stop= True)
+        self._DB_Worker.disconnect()
         
     def Print_Price_Buffer(self):
         return self._Price_Buffer
     
     def _Check_Connection_status(self):
         self._Execution_Port._DWX_ZMQ_HEARTBEAT_()
-        self._Data_Port._DWX_ZMQ_HEARTBEAT_()
         self._Holding_Port._DWX_ZMQ_HEARTBEAT_()
+        self._Data_Port._DWX_ZMQ_HEARTBEAT_()
         _wait_start = pd.to_datetime('now')
         while (pd.to_datetime('now') - _wait_start).total_seconds()< 3:   
             sleep(self._Refresh)
             if self._Execution_Port._valid_response_('zmq'):
                 _Response_1 = self._Execution_Port._get_response_()
-                Fail = None if _Response_1['_response'] == 'loud and clear!' else 1
+                if _Response_1['_response'] != 'loud and clear!':
+                    Fail = 1
+                else:
+                    Fail = None
+                    print('Execution Port Connected. ')
             else:
                 self._Execution_Port._DWX_ZMQ_HEARTBEAT_()
                 Fail = 1
@@ -211,6 +222,8 @@ class Live_Trade_App():
                 _Response_2 = self._Data_Port._get_response_()
                 if _Response_2['_response'] != 'loud and clear!':
                     Fail = 2
+                else:
+                    print('Data Port Connected. ')
             else:
                 self._Data_Port._DWX_ZMQ_HEARTBEAT_()
                 Fail = 2
@@ -218,7 +231,9 @@ class Live_Trade_App():
             if self._Holding_Port._valid_response_('zmq'):
                 _Response_3 = self._Holding_Port._get_response_()
                 if _Response_3['_response'] != 'loud and clear!':
-                    Fail = 3                
+                    Fail = 3      
+                else:
+                    print('Holding Port Connected. ')
             else:
                 self._Holding_Port._DWX_ZMQ_HEARTBEAT_()
                 Fail = 3

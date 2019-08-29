@@ -111,6 +111,7 @@ class Risk_Advisor():
         self.portfolio = self.portfolio[self.Assets + ['Cash']]
         self.weights = self.weights[self.Assets + ['Cash']]
         self._Port_Exc_Cash = self.portfolio.drop('Cash', axis = 1)
+        self._frequency = frequency
         DB_Worker.disconnect()
         if Volume_Multiplier is not None:
             for Asset in Volume_Multiplier:
@@ -307,7 +308,7 @@ class Risk_Advisor():
             use = self._Volume.iloc[(n-days):, ]
             out = self.Units.abs()/use.mean()*100
             out = out.sort_values(by = out.index[0], axis =1, ascending = False)
-            print('The liquidity of', days,'days, in terms of %')
+            print('The liquidity of', days, self._frequency, ' in terms of %')
             print(out)
         
         else:
@@ -320,7 +321,7 @@ class Risk_Advisor():
                 ax8 = outcome.plot()
                 ax8.set_xlabel('time')
                 ax8.set_ylabel('% Liquidity')                
-                ax8.set_title('% of '+str(days)+' '+ self.frequency + ' average volume')
+                ax8.set_title('% of '+str(days)+' '+ self._frequency + ' average volume')
             if self._Graphic == False:
                 return outcome                
   
@@ -365,11 +366,7 @@ class Risk_Advisor():
                 Cont = Cont * now
                 Cont_Collect.append(Cont)
             Cont = pd.DataFrame(Cont_Collect, index = self.portfolio.index, columns = self.Assets + ['Cash'])
-            
-            if self._Graphic:
-                Cont.plot()
-            else:
-                return Cont
+            return Cont
             
     
     def All_Live_Printers(self):
