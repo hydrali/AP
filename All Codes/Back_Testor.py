@@ -14,7 +14,7 @@ from Risk_Analytics_App import Risk_Advisor
 from Performance_Analytic_App import Performance_Advisor
 
 class Backtestor():
-    def __init__(self, Asset, Frequency = 'Daily', Signal_use ='All', start = None, end = None, Starting_Equity = 100000):
+    def __init__(self, Asset, Frequency = 'Daily', Signal_use ='All', start = None, end = None, Starting_Equity = 100000, threshold = 1):
         Price_Worker = DB_Operator('MT4_Database')
         Signal_Worker = DB_Operator('Signal_DB')
         Temp = Price_Worker.Select_rows(tablename= Frequency, find= Asset, by = 'Asset')
@@ -49,6 +49,11 @@ class Backtestor():
             self.Signal = All_Signals[Signal_use]
         self.Signal = self.Signal.set_index([pd.to_datetime(self.Signal['open_time']), self.Signal['Asset']])
         self.Signal = self.Signal.drop(['open_time', 'Asset'], axis = 1)
+        
+        ML_Signals = ['LASSO', 'Elastic_Net', 'Neural_Net', 'Support_Vector', 'Random_Forest']
+        for sig in Signal_use:
+            if sig in ML_Signals:
+                self.Signal[sig] = np.sign(self.Signal[sig])*(self.Signal[sig].abs() > threshold)
         
         Asset.append('Cash')
         self.Asset = Asset

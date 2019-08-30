@@ -75,46 +75,56 @@ class Performance_Advisor(Risk_Advisor):
              ax103.plot(Port.index, self.Equity, '--', color = 'green')
         
 
-    def _Calculate_Factor_Loadings(self, use_bars = 80, rolling = 10):
-        if self._Factors is None:
-            print('Please provide factors in order to calculate factor loadings :(')
-        Factor_ret = self._Factors.pct_change().fillna(0)
-        time1 = Factor_ret.index.sort_values()
-        time2 = self.portfolio.index.sort_values()
-        time3 = self.ret.index.sort_values()
-        Common_Time = list(set(time1).intersection(time3))
-        if (len(Common_Time) < len(time3) * 0.8) and (len(Common_Time) < len(time1) * 0.5):
-            print('Please double check your factor is same frequency as your trading signal!! ')
-            return None
-        Factor_ret = Factor_ret.loc[pd.Index(Common_Time)]
-        ret = self.ret.loc[pd.Index(Common_Time)].drop('Cash', axis = 1)
-        time1 = Factor_ret.index.sort_values()
-        #compare if we have enough bars to do first regression when portfolio info started, if not we wait untill we have enough bars to do first regression
-        N = min(self.portfolio.shape[0]//rolling + 1, (Factor_ret.shape[0] - use_bars)//rolling)
-        T_end = use_bars if N< (self.portfolio.shape[0]//rolling + 1) else list(time1).index(time2[0])
-        _Beta_idx = []
-        _Beta_record = None
-
-        for i in range(N):
-            idx = time1[(T_end-use_bars):T_end]
-            temp = list(time2).index(idx[-1])
-            idx1 = time2[temp:(temp + rolling)]
-            _Beta_idx.extend(list(idx1))
-            Y = ret.loc[idx].values
-            X = Factor_ret.loc[idx].values
-            weight = self.weights.drop('Cash', axis=1).loc[idx1].values
+    def _Calculate_Factor_Loadings(self, use_bars = 80, rolling = 10, live = False):
+        if live == False:
+            if self._Factors is None:
+                print('Please provide factors in order to calculate factor loadings :(')
+            Factor_ret = self._Factors.pct_change().fillna(0)
+            time1 = Factor_ret.index.sort_values()
+            time2 = self.portfolio.index.sort_values()
+            time3 = self.ret.index.sort_values()
+            Common_Time = list(set(time1).intersection(time3))
+            if (len(Common_Time) < len(time3) * 0.8) and (len(Common_Time) < len(time1) * 0.5):
+                print('Please double check your factor is same frequency as your trading signal!! ')
+                return None
+            Factor_ret = Factor_ret.loc[pd.Index(Common_Time)]
+            ret = self.ret.loc[pd.Index(Common_Time)].drop('Cash', axis = 1)
+            time1 = Factor_ret.index.sort_values()
+            #compare if we have enough bars to do first regression when portfolio info started, if not we wait untill we have enough bars to do first regression
+            N = min(self.portfolio.shape[0]//rolling + 1, (Factor_ret.shape[0] - use_bars)//rolling)
+            T_end = use_bars if N< (self.portfolio.shape[0]//rolling + 1) else list(time1).index(time2[0])
+            _Beta_idx = []
+            _Beta_record = None
+    
+            for i in range(N):
+                idx = time1[(T_end-use_bars):T_end]
+                temp = list(time2).index(idx[-1])
+                idx1 = time2[temp:(temp + rolling)]
+                _Beta_idx.extend(list(idx1))
+                Y = ret.loc[idx].values
+                X = Factor_ret.loc[idx].values
+                weight = self.weights.drop('Cash', axis=1).loc[idx1].values
+                _Paritial_Betas = np.matmul(np.matmul(np.linalg.inv(np.matmul(X.transpose(), X)),X.transpose()),Y)
+                _Total_Beta = np.matmul(_Paritial_Betas, weight.transpose()).transpose()
+                if _Beta_record is None:
+                    _Beta_record = np.array(_Total_Beta)
+                else:
+                    _Beta_record = np.concatenate((_Beta_record, _Total_Beta))
+                T_end+=rolling
+                
+            self._Factor_ret = Factor_ret
+            self._Factor_Loadings = pd.DataFrame(_Beta_record, columns = self._Factors.columns, index = _Beta_idx)
+            self._Factor_Loadings.reindex(self.portfolio.index, method = 'ffill')
+            self._Factor_Loadings.fillna(0)
+        else:   
+            Y = self.ret.drop('Cash', axis = 1)
+            Factor_ret = self._Factors.loc[Y.index].pct_change().fillna(0)       
+            X = Factor_ret.values
+            weight = self.weights.drop('Cash', axis=1).values
+            Y = Y.values
             _Paritial_Betas = np.matmul(np.matmul(np.linalg.inv(np.matmul(X.transpose(), X)),X.transpose()),Y)
             _Total_Beta = np.matmul(_Paritial_Betas, weight.transpose()).transpose()
-            if _Beta_record is None:
-                _Beta_record = np.array(_Total_Beta)
-            else:
-                _Beta_record = np.concatenate((_Beta_record, _Total_Beta))
-            T_end+=rolling
-            
-        self._Factor_ret = Factor_ret
-        self._Factor_Loadings = pd.DataFrame(_Beta_record, columns = self._Factors.columns, index = _Beta_idx)
-        self._Factor_Loadings.reindex(self.portfolio.index, method = 'ffill')
-        self._Factor_Loadings.fillna(0)
+            self._Factor_Loadings = _Total_Beta
         
         
     def Return_Attribution(self):
@@ -137,9 +147,9 @@ class Performance_Advisor(Risk_Advisor):
             return Factor_RET
  
     
-    def Show_Loading(self):
+    def Show_Loading(self,  live = False):
         if self._Factor_Loadings is None:
-            self._Calculate_Factor_Loadings()
+            self._Calculate_Factor_Loadings(live = live)
 
         if self._PGraphic:
             self._Factor_Loadings.plot(title = 'Betas over time')

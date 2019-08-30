@@ -18,7 +18,7 @@ from IPython.display import clear_output
 import random
 
 class Live_Trade_App():
-    def __init__(self, Pool_Limit = 100, Update_Frequency = 5, _Time_Out = 4, _Refresh = 0.3, _TimeZone = 1):
+    def __init__(self, Pool_Limit = 100, Update_Frequency = 5, _Time_Out = 4, _Refresh = 0.3, _TimeZone = 1, Factors = None):
         self.Pool_Limit = Pool_Limit
         self.Update_Frequency = Update_Frequency
         self._Time_Out = _Time_Out
@@ -36,6 +36,7 @@ class Live_Trade_App():
         self._Execution_Port = DWX_ZeroMQ_Connector(_verbose = False)
         self._Check_Connection_status()
         self._DB_Worker = DB_Operator('MT4_Database')
+        self.Factors = Factors
 
     def Run(self):
         self._Holding_Updater = Thread(name = 'Holding Updater', target = self._Current_Holding, args = (self.Update_Frequency, ))
@@ -49,6 +50,10 @@ class Live_Trade_App():
         self._Random_Trader = Thread(name = 'Rand Trader', target=self._Baby_Strategy, args= (self.Update_Frequency, ))
         self._Random_Trader.daemon = True
         self._Random_Trader.start()
+        
+        self._Price_Ledger = Thread(name = 'Price Ledger', target=self._Snapshots, args= (self.Update_Frequency, ))
+        self._Price_Ledger.daemon = True
+        self._Price_Ledger.start()       
         
     
     def _Current_Holding(self, every):
@@ -97,7 +102,7 @@ class Live_Trade_App():
                     Last_Postion = self._Holding.copy()
                     if self._Price_Buffer.shape[0] < 500:
                         self._Online_Auditor = Risk_Advisor(holding_info= Last_Postion, frequency= 'Minutely', Test_day= 'live', Graphic=False, Volume_Multiplier= self._Volume_Multiplier)
-                        self._Online_Appraiser = Performance_Advisor(holding_info= Last_Postion, frequency= 'Minutely', Test_day= 'live', Graphic=False, Volume_Multiplier= self._Volume_Multiplier)
+                        self._Online_Appraiser = Performance_Advisor(holding_info= Last_Postion, frequency= 'Minutely', Test_day= 'live', Factors = self.Factors, Graphic=False, Volume_Multiplier= self._Volume_Multiplier)
                     else:
                         self._Online_Auditor = Risk_Advisor(holding_info=Last_Postion, _Price= self._Price_Buffer, _Volume= self._Volume_Buffer, Test_day='live', Graphic= False)
                 
@@ -108,8 +113,10 @@ class Live_Trade_App():
                     plt.pie(Vol_Att.values, labels= list(Vol_Att.columns), autopct='%1.1f%%')
                 else: 
                     Vol_Att.plot.bar()
-                self._Online_Appraiser.Show_Loading()
-                
+                loadings = self._Online_Appraiser.Show_Loading(live = True)
+                print(" ")
+                print('The loadings of factors ', self.Factors, 'are as follows: ')
+                print(loadings)
                 plt.show()
             sleep(every)
             clear_output()
@@ -169,7 +176,8 @@ class Live_Trade_App():
         if stop:
             self._Data_Port._DWX_MTX_UNSUBSCRIBE_ALL_MARKETDATA_REQUESTS_()
         else:
-            self._Data_Port._DWX_MTX_SUBSCRIBE_MARKETDATA_(symbol)
+            for items in symbol:
+                self._Data_Port._DWX_MTX_SUBSCRIBE_MARKETDATA_(items)
             
     def _Snapshots(self, every = 10, symbol = None):
         if self._Price_Buffer.shape[0] == 0:
